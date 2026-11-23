@@ -13,9 +13,14 @@ use crate::{
     error::Result,
     labels,
     pack::{Point, PointPrecision},
+    parse::lattice,
     record::Layer,
     search::road,
-    util::geo::{METRES_PER_DEGREE, haversine_m, line_parts},
+    text_index::is_street_type,
+    util::{
+        fold::search_key,
+        geo::{METRES_PER_DEGREE, haversine_m, line_parts},
+    },
 };
 
 /// Words that join two street names.
@@ -101,6 +106,36 @@ struct Meet {
     gap_m: f64,
 }
 
+/// `street` with its type and directions written out, "9th St S" as "9th
+/// street south", `None` when that is how it is written. The search reads
+/// a street name such as "9th" with its abbreviated type as a number and a
+/// word, so the written-out form finds what the abbreviated one misses.
+fn written_in_full(street: &str) -> Option<String> {
+    let parts = road::StreetParts::of(street)?;
+    let key = |word: &str| search_key(word).unwrap_or_default();
+    // "st" abbreviates "saint" too; only a street type is wanted here.
+    let kind = |word: &str| {
+        let key = key(word);
+        if is_street_type(&key) {
+            return key;
+        }
+        lattice::other_forms(&key)
+            .into_iter()
+            .find(|form| is_street_type(form))
+            .unwrap_or(key)
+    };
+    let direction =
+        |word: &str| road::direction_of(&key(word)).map_or_else(|| key(word), str::to_string);
+    let words = [
+        parts.prefix.map(direction),
+        Some(key(&parts.name)),
+        parts.kind.map(kind),
+        parts.suffix.map(direction),
+    ];
+    let full = words.into_iter().flatten().collect::<Vec<_>>().join(" ");
+    (Some(&full) != search_key(street).as_ref()).then_some(full)
+}
+
 fn street_layer(layer: Option<&str>) -> bool {
     layer.is_none_or(|layer| layer == Layer::Street.as_str())
 }
@@ -181,11 +216,11 @@ impl TextSearcher {
     ) -> Result<Option<TextSearchHit>> {
         for split in splits.iter().take(MAX_SPLITS) {
             let area = split.area.as_deref();
-            let first = self.streets_named(find(&split.first, area)?, &split.first)?;
+            let first = self.streets_found(&find, &split.first, area)?;
             if first.is_empty() {
                 continue;
             }
-            let second = self.streets_named(find(&split.second, area)?, &split.second)?;
+            let second = self.streets_found(&find, &split.second, area)?;
             // Nearest in rank first: the second street of the best first
             // street comes before the best second street of the next.
             let mut pairs = (0..first.len())
@@ -207,6 +242,21 @@ impl TextSearcher {
             }
         }
         Ok(None)
+    }
+
+    /// The streets `words` name in `area`, found as written or else written
+    /// out in full.
+    fn streets_found(
+        &self,
+        find: &impl Fn(&str, Option<&str>) -> Result<Vec<TextSearchHit>>,
+        words: &str,
+        area: Option<&str>,
+    ) -> Result<Vec<Side>> {
+        let streets = self.streets_named(find(words, area)?, words)?;
+        match written_in_full(words) {
+            Some(full) if streets.is_empty() => self.streets_named(find(&full, area)?, words),
+            _ => Ok(streets),
+        }
     }
 
     /// The street records among `hits` that `words` name, with their lines.
@@ -542,6 +592,8 @@ pub(crate) mod fixture {
             "9th Street South",
             &[(-81.875, 26.330), (-81.875, 26.350)],
         );
+        street(401, "Open Road", &[(-81.620, 26.450), (-81.600, 26.450)]);
+        street(402, "Wide Way", &[(-81.610, 26.440), (-81.610, 26.460)]);
         vec![nodes, ways, relations]
     }
 
@@ -570,8 +622,10 @@ mod tests {
 
     use serde_json::{Value, json};
 
+    use super::written_in_full;
+
     use crate::{
-        api::forward_collection,
+        api::{PartMatch, forward_collection},
         search::{AddressGeocodeOptions, TextSearchHit, TextSearchOptions, TextSearcher},
     };
 
@@ -671,6 +725,22 @@ mod tests {
     }
 
     #[test]
+    fn a_street_is_written_in_full_by_its_type_and_directions() {
+        for (written, full) in [
+            ("5th Ave S", Some("5th avenue south")),
+            ("9th St S", Some("9th street south")),
+            ("W Main St", Some("west main street")),
+            ("Tamiami Trl", Some("tamiami trail")),
+            ("9th Street South", None),
+            ("Airport-Pulling Road", None),
+            ("Saint Marks", None),
+            ("St", None),
+        ] {
+            assert_eq!(written_in_full(written).as_deref(), full, "{written}");
+        }
+    }
+
+    #[test]
     fn streets_that_share_a_vertex_cross_there() {
         assert_at(
             &ask("Oak Street and Pine Street, Naples")[0],
@@ -681,6 +751,19 @@ mod tests {
     #[test]
     fn a_street_that_stops_a_few_metres_short_still_meets_the_other() {
         assert_at(&ask("Gap Road & Long Lane, Naples")[0], [-81.760, 26.17995]);
+    }
+
+    #[test]
+    fn streets_of_another_town_cross_there_and_say_the_town_is_unmatched() {
+        let hit = &ask("Oak Street and Pine Street, Bonita Springs")[0];
+        assert_at(hit, [-81.775, 26.120]);
+        assert_eq!(hit.matched.locality, Some(PartMatch::Unmatched));
+        assert_eq!(hit.record.label, "Oak Street & Pine Street, Naples");
+    }
+
+    #[test]
+    fn streets_in_no_town_are_not_denied_the_town_the_query_states() {
+        assert_at(&ask("Open Road and Wide Way, Naples")[0], [-81.61, 26.45]);
     }
 
     #[test]
