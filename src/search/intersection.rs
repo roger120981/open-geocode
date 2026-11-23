@@ -419,22 +419,18 @@ fn nearest_points(one: [[f64; 2]; 2], other: [[f64; 2]; 2]) -> Option<(f64, [f64
     closest.filter(|(distance, _)| *distance <= NEAR_MISS_M)
 }
 
+/// Naples and Bonita Springs as a built Pack, for the tests of every entry
+/// point that takes a query.
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixture {
     use std::{
         path::{Path, PathBuf},
         sync::OnceLock,
     };
 
-    use serde_json::{Value, json};
-
-    use crate::{
-        api::forward_collection,
-        builder::osm::{
-            BuildOsmOptions, build_osm_pack,
-            test_pbf::{TestElement, node, relation, way, write_pbf},
-        },
-        search::{AddressGeocodeOptions, TextSearchHit, TextSearchOptions, TextSearcher},
+    use crate::builder::osm::{
+        BuildOsmOptions, build_osm_pack,
+        test_pbf::{TestElement, node, relation, way, write_pbf},
     };
 
     type Tags<'a> = &'a [(&'static str, &'static str)];
@@ -549,7 +545,7 @@ mod tests {
         vec![nodes, ways, relations]
     }
 
-    fn fixture() -> &'static Path {
+    pub(crate) fn pack() -> &'static Path {
         static PACK: OnceLock<PathBuf> = OnceLock::new();
         PACK.get_or_init(|| {
             let dir = std::env::temp_dir()
@@ -566,10 +562,22 @@ mod tests {
             dir.join("pack")
         })
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::OnceLock;
+
+    use serde_json::{Value, json};
+
+    use crate::{
+        api::forward_collection,
+        search::{AddressGeocodeOptions, TextSearchHit, TextSearchOptions, TextSearcher},
+    };
 
     fn searcher() -> &'static TextSearcher {
         static SEARCHER: OnceLock<TextSearcher> = OnceLock::new();
-        SEARCHER.get_or_init(|| TextSearcher::open(fixture()).expect("searcher"))
+        SEARCHER.get_or_init(|| TextSearcher::open(super::fixture::pack()).expect("searcher"))
     }
 
     fn options(query: &str) -> TextSearchOptions {

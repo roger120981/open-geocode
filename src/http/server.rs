@@ -2915,6 +2915,108 @@ pub(crate) mod router_tests {
         let _ = std::fs::remove_dir_all(pack.with_extension("jobs"));
     }
 
+    /// The point where two streets cross answers every route that takes a
+    /// free-text address and geocodes it; the routes that search places,
+    /// suggest, or look a point up are as they were.
+    #[tokio::test]
+    async fn a_crossing_answers_each_route_that_geocodes_free_text() {
+        let pack = crate::search::intersection::fixture::pack();
+        let router = build_router(state_for(pack, true), None, None);
+        let crossing = |answer: &serde_json::Value| {
+            let feature = &answer["features"][0];
+            (
+                feature["properties"]["id"].clone(),
+                feature["properties"]["layer"].clone(),
+                feature["properties"]["accuracy"].clone(),
+                feature["geometry"]["coordinates"]
+                    .as_array()
+                    .map(|point| point.iter().map(|axis| axis.as_f64().unwrap()).collect()),
+            )
+        };
+        let expected = (
+            serde_json::json!("derived:crossing:osm:way:101:osm:way:102"),
+            serde_json::json!("street"),
+            serde_json::json!("street"),
+            Some(vec![-81.795, 26.14]),
+        );
+        let close = |found: &(
+            serde_json::Value,
+            serde_json::Value,
+            serde_json::Value,
+            Option<Vec<f64>>,
+        )| {
+            let point = found.3.as_ref().expect("a point");
+            assert!((point[0] + 81.795).abs() < 1e-6 && (point[1] - 26.14).abs() < 1e-6);
+            (
+                found.0.clone(),
+                found.1.clone(),
+                found.2.clone(),
+                expected.3.clone(),
+            )
+        };
+
+        for uri in [
+            "/geocode?q=5th%20Avenue%20South%20and%209th%20Street%20South,%20Naples,%20FL",
+            "/geocode?q=5th%20Ave%20S%20%26%209th%20St%20S,%20Naples",
+            "/geocode?address=5th%20Avenue%20South%20%26%209th%20Street%20South&locality=Naples&region=FL",
+        ] {
+            let reply = send(router.clone(), request("GET", uri)).await;
+            assert_eq!(reply.status, StatusCode::OK, "{uri}");
+            assert_eq!(close(&crossing(&reply.json())), expected, "{uri}");
+        }
+
+        let body = r#"[
+            {"q": "5th Avenue South at 9th Street South, Naples, FL"},
+            {"address": "5th Avenue South & 9th Street South", "locality": "Naples"},
+            {"q": "Bed and Breakfast, Naples"}
+        ]"#;
+        for method in ["POST", "QUERY"] {
+            let reply = send(router.clone(), batch_request(method, "/geocode", body)).await;
+            assert_eq!(reply.status, StatusCode::OK, "{method}");
+            let results = reply.json()["results"].clone();
+            for item in 0..2 {
+                let found = crossing(&results[item]["response"]);
+                assert_eq!(close(&found), expected, "{method} item {item}");
+            }
+            let other = crossing(&results[2]["response"]);
+            assert_ne!(other.0, expected.0, "{method} item 2");
+        }
+
+        let rows = "{\"q\": \"5th Avenue South and 9th Street South, Naples\"}\n";
+        let reply = send(
+            router.clone(),
+            upload("/jobs?endpoint=geocode", "application/jsonl", rows),
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::CREATED);
+        let line = std::str::from_utf8(&reply.body)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .next()
+            .expect("one row");
+        assert_eq!(close(&crossing(&line["response"])), expected);
+
+        for uri in [
+            "/places?q=5th%20Avenue%20South%20and%209th%20Street%20South,%20Naples",
+            "/autocomplete?q=5th%20Avenue%20South%20and%209th%20Street%20South",
+            "/reverse?lon=-81.795&lat=26.14",
+        ] {
+            let reply = send(router.clone(), request("GET", uri)).await;
+            assert_eq!(reply.status, StatusCode::OK, "{uri}");
+            let ids = reply.json()["features"]
+                .as_array()
+                .expect("features")
+                .iter()
+                .map(|feature| feature["properties"]["id"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>();
+            assert!(
+                ids.iter().all(|id| !id.starts_with("derived:crossing:")),
+                "{uri}: {ids:?}"
+            );
+        }
+    }
+
     /// A town drawn as an area, a street, a hall drawn as a building, a cafe
     /// mapped as a node and a house, in that order.
     fn write_shaped_pack(dir: &Path) {

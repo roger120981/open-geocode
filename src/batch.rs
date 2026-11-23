@@ -1096,6 +1096,58 @@ mod tests {
     }
 
     #[test]
+    fn a_row_naming_two_streets_resolves_to_where_they_cross() {
+        let root = std::env::temp_dir().join(format!("og-batch-crossing-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("dir");
+        let input = root.join("in.csv");
+        std::fs::write(
+            &input,
+            "id,street,city,state\n\
+             a,5th Avenue South & 9th Street South,Naples,FL\n\
+             b,Bed and Breakfast,Naples,FL\n\
+             c,Oak Street and Pine Street,Naples,FL\n",
+        )
+        .expect("input");
+        let report = run_batch_geocode(&GeocodeOptions {
+            pack: Some(crate::search::intersection::fixture::pack().to_path_buf()),
+            input,
+            output: root.join("out.csv"),
+            audit: Some(root.join("audit.csv")),
+            address_field_groups: vec![vec![Column::Named("street".into())]],
+            locality_field: Some(Column::Named("city".into())),
+            region_field: Some(Column::Named("state".into())),
+            limit: 5,
+            ..GeocodeOptions::default()
+        })
+        .expect("batch");
+        let output = read_csv(&root.join("out.csv")).expect("output");
+        let audit = read_csv(&root.join("audit.csv")).expect("audit");
+        let id = audit
+            .headers
+            .iter()
+            .position(|header| header == "geocode_id")
+            .expect("id column");
+        assert_eq!(
+            audit.rows[0][id],
+            "derived:crossing:osm:way:101:osm:way:102"
+        );
+        assert_eq!(
+            audit.rows[2][id],
+            "derived:crossing:osm:way:103:osm:way:104"
+        );
+        assert_ne!(
+            audit.rows[1][id],
+            "derived:crossing:osm:way:101:osm:way:102"
+        );
+        assert_eq!(output.rows[0][4], "26.1400000");
+        assert_eq!(output.rows[0][5], "-81.7950000");
+        assert_eq!(output.rows[2][4], "26.1200000");
+        assert_eq!(output.rows[2][5], "-81.7750000");
+        assert_eq!(report.rows, 3);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn composes_query_from_configured_fields() {
         let row = ByteRecord::from(vec!["  1333   Sheppard Ave E ", "Toronto", "M3C 1J4"]);
         let query = compose_query(&row, &[0, 2]);

@@ -12417,7 +12417,7 @@ fn is_address_number_token(token: &str) -> bool {
 
 mod highlight;
 
-mod intersection;
+pub(crate) mod intersection;
 
 mod named;
 
