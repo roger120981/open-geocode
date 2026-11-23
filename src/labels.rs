@@ -186,6 +186,17 @@ pub fn estimated_address_id(number: u32, low_id: &str, high_id: &str) -> String 
     format!("derived:estimate:{number}:{low_id}:{high_id}")
 }
 
+/// The crossing of two streets, by the ids of their records in order, so
+/// the same two give one id whichever a query names first.
+pub fn crossing_id(first: &str, second: &str) -> String {
+    let (low, high) = if first <= second {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    format!("derived:crossing:{low}:{high}")
+}
+
 pub fn interpolation_record_id(way_id: i64, low_node_id: i64, high_node_id: i64) -> String {
     format!("osm:way:{way_id}:interp:{low_node_id}-{high_node_id}")
 }

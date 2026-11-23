@@ -582,6 +582,15 @@ impl TextSearcher {
     }
 
     pub fn search(&self, options: &TextSearchOptions) -> Result<Vec<TextSearchHit>> {
+        let mut hits = self.search_readings(options)?;
+        if let Some(crossing) = self.crossing_in_text(options)? {
+            hits.insert(0, crossing);
+            hits.truncate(effective_limit(options.limit));
+        }
+        Ok(hits)
+    }
+
+    fn search_readings(&self, options: &TextSearchOptions) -> Result<Vec<TextSearchHit>> {
         let mut hits = self.search_at(options, Depth::Query)?;
         if self.places || !number_reading::allows_retry(options.layer.as_deref(), hits.iter()) {
             return Ok(hits);
@@ -1209,6 +1218,22 @@ impl TextSearcher {
     }
 
     pub(crate) fn geocode_address_scoped(
+        &self,
+        options: &AddressGeocodeOptions,
+        focus: Option<[f64; 2]>,
+        bbox: Option<BoundingBox>,
+    ) -> Result<Option<AddressGeocodeHit>> {
+        let found = self.geocode_address_readings(options, focus, bbox)?;
+        match self.crossing_in_fields(options, focus, bbox)? {
+            Some(hit) => Ok(Some(AddressGeocodeHit {
+                query: found.map_or_else(|| options.address.clone(), |found| found.query),
+                hit,
+            })),
+            None => Ok(found),
+        }
+    }
+
+    fn geocode_address_readings(
         &self,
         options: &AddressGeocodeOptions,
         focus: Option<[f64; 2]>,
@@ -12391,6 +12416,8 @@ fn is_address_number_token(token: &str) -> bool {
 }
 
 mod highlight;
+
+mod intersection;
 
 mod named;
 
